@@ -53,11 +53,33 @@ function simulateCPUUsage(cpuLimit) {
     return Math.floor(Math.random() * (maxUsage - minUsage + 1)) + minUsage;
 }
 
-// Simuler l'utilisation RAM (entre 40% et 80% de la limite)
-function simulateRAMUsage(ramLimit) {
-    const minUsage = ramLimit * 0.4;   // 40%
-    const maxUsage = ramLimit * 0.8;   // 80%
-    return (Math.random() * (maxUsage - minUsage) + minUsage).toFixed(1);
+// Simuler l'utilisation RAM RÉALISTE selon le type de serveur et les joueurs
+function simulateRAMUsage(server, specs) {
+    if (server.status !== 'online') {
+        return 0;
+    }
+
+    // RAM de base selon le type (serveur vide, stable)
+    let baseRam = 0.5; // Vanilla de base : 0.5 GB
+    
+    if (server.type === 'forge' || server.type === 'neoforge') {
+        baseRam = 1.2; // Forge sans mods : 1-1.5 GB
+    } else if (server.type === 'fabric' || server.type === 'quilt') {
+        baseRam = 0.8; // Fabric plus léger : 0.8 GB
+    } else if (server.type === 'paper' || server.type === 'spigot') {
+        baseRam = 0.6; // Paper optimisé : 0.6 GB
+    }
+    
+    // Ajouter selon les joueurs (0.15 GB par joueur)
+    let playersRam = server.currentPlayers * 0.15;
+    
+    // Variation aléatoire légère (+/- 10%)
+    let variation = (Math.random() * 0.2 - 0.1) * baseRam;
+    
+    let ramUsage = baseRam + playersRam + variation;
+    ramUsage = Math.max(0.3, Math.min(ramUsage, specs.ram * 0.95)); // Min 0.3 GB, Max 95% de la limite
+    
+    return parseFloat(ramUsage.toFixed(1));
 }
 
 // Route de santé
@@ -129,13 +151,13 @@ app.get('/api/servers', (req, res) => {
     try {
         // Ajouter les stats en temps réel
         const serversWithStats = serversDB.map(server => {
+            const specs = getServerSpecs(server.plan);
+            
             const cpuUsage = server.status === 'online' 
                 ? simulateCPUUsage(server.cpuLimit) 
                 : 0;
             
-            const ramUsage = server.status === 'online'
-                ? simulateRAMUsage(server.ram)
-                : 0;
+            const ramUsage = simulateRAMUsage(server, specs);
 
             // Calculer uptime si en ligne
             let uptime = 0;
@@ -181,14 +203,14 @@ app.get('/api/servers/:id', (req, res) => {
             });
         }
 
+        const specs = getServerSpecs(server.plan);
+
         // Ajouter les stats en temps réel
         const cpuUsage = server.status === 'online' 
             ? simulateCPUUsage(server.cpuLimit) 
             : 0;
         
-        const ramUsage = server.status === 'online'
-            ? simulateRAMUsage(server.ram)
-            : 0;
+        const ramUsage = simulateRAMUsage(server, specs);
 
         let uptime = 0;
         if (server.status === 'online' && server.startedAt) {
