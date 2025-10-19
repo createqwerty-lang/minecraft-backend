@@ -46,11 +46,26 @@ function generateServerIP(id) {
     };
 }
 
-// Simuler l'utilisation CPU (entre 20% et 70% de la limite)
-function simulateCPUUsage(cpuLimit) {
-    const minUsage = Math.floor(cpuLimit * 0.2);  // 20% de la limite
-    const maxUsage = Math.floor(cpuLimit * 0.7);  // 70% de la limite
-    return Math.floor(Math.random() * (maxUsage - minUsage + 1)) + minUsage;
+// Simuler l'utilisation CPU RÉALISTE selon le type de serveur
+function simulateCPUUsage(server, cpuLimit) {
+    if (server.status !== 'online') return 0;
+
+    let baseUsage = cpuLimit * 0.2; // 20% de base
+    let maxUsage = cpuLimit * 0.7;  // 70% max
+    
+    // Forge/mods consomment BEAUCOUP plus de CPU
+    if (server.type === 'forge' || server.type === 'neoforge') {
+        baseUsage = cpuLimit * 0.4;  // 40% de base
+        maxUsage = cpuLimit * 1.5;   // Peut dépasser la limite (600% sur Gamer!)
+    } else if (server.type === 'fabric' || server.type === 'quilt') {
+        baseUsage = cpuLimit * 0.3;  // 30% de base
+        maxUsage = cpuLimit * 0.9;   // 90% max
+    }
+    
+    const minUsage = Math.floor(baseUsage);
+    const maxUsageFloor = Math.floor(maxUsage);
+    
+    return Math.floor(Math.random() * (maxUsageFloor - minUsage + 1)) + minUsage;
 }
 
 // Simuler l'utilisation RAM RÉALISTE selon le type de serveur et les joueurs
