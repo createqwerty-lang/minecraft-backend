@@ -1,6 +1,7 @@
-// server.js - Backend API pour hébergement Minecraft avec système CPU
+// server.js - Backend API avec Aternos
 const express = require('express');
 const cors = require('cors');
+const { Client } = require('aternos-api');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -9,421 +10,431 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// Base de données simulée (en mémoire)
-let serversDB = [];
-let serverIdCounter = 1;
+// Configuration Aternos (À MODIFIER avec tes identifiants)
+const ATERNOS_USERNAME = process.env.ATERNOS_USERNAME || 'TON_EMAIL_ATERNOS';
+const ATERNOS_PASSWORD = process.env.ATERNOS_PASSWORD || 'TON_MOT_DE_PASSE';
 
-// Spécifications par plan
-function getServerSpecs(plan) {
-    const specs = {
-        'Basique': { 
-            ram: 4, 
-            cpuLimit: 50,      // 50% = 0.5 cœur
-            maxPlayers: 20,
-            storage: 10        // 10 GB
-        },
-        'Super': { 
-            ram: 8, 
-            cpuLimit: 200,     // 200% = 2 cœurs
-            maxPlayers: 50,
-            storage: 25        // 25 GB
-        },
-        'Gamer': { 
-            ram: 16, 
-            cpuLimit: 400,     // 400% = 4 cœurs
-            maxPlayers: 100,
-            storage: 50        // 50 GB
+// Client Aternos
+let aternosClient = null;
+let aternosServers = new Map(); // Map<serverId, aternosServerObject>
+let isConnected = false;
+
+// Initialiser la connexion Aternos au démarrage
+async function initAternos() {
+    try {
+        console.log('🔄 Connexion à Aternos...');
+        aternosClient = new Client();
+        await aternosClient.login(ATERNOS_USERNAME, ATERNOS_PASSWORD);
+        isConnected = true;
+        console.log('✅ Connecté à Aternos !');
+        
+        // Récupérer les serveurs existants
+        await refreshServerList();
+    } catch (error) {
+        console.error('❌ Erreur connexion Aternos:', error.message);
+        isConnected = false;
+    }
+}
+
+// Rafraîchir la liste des serveurs depuis Aternos
+async function refreshServerList() {
+    if (!isConnected || !aternosClient) return;
+    
+    try {
+        const servers = await aternosClient.getServers();
+        aternosServers.clear();
+        
+        for (const server of servers) {
+            aternosServers.set(server.id, server);
         }
-    };
-    return specs[plan] || specs['Basique'];
+        
+        console.log(`✅ ${aternosServers.size} serveur(s) Aternos chargé(s)`);
+    } catch (error) {
+        console.error('❌ Erreur récupération serveurs:', error.message);
+    }
 }
 
-// Générer une IP de serveur
-function generateServerIP(id) {
+// Convertir un serveur Aternos en format API
+function formatAternosServer(aternosServer, serverId) {
+    const status = aternosServer.status || 'offline'; // 'online', 'offline', 'starting', 'stopping'
+    const isOnline = status === 'online';
+    
+    // Récupérer les infos
+    const currentPlayers = aternosServer.playersCurrent || 0;
+    const maxPlayers = aternosServer.playersMax || 20;
+    const version = aternosServer.software?.version || 'Unknown';
+    const softwareName = aternosServer.software?.name?.toLowerCase() || 'vanilla';
+    
+    // Mapper le type de software
+    let type = 'vanilla';
+    if (softwareName.includes('paper')) type = 'paper';
+    else if (softwareName.includes('spigot')) type = 'spigot';
+    else if (softwareName.includes('forge')) type = 'forge';
+    else if (softwareName.includes('fabric')) type = 'fabric';
+    
+    // RAM réaliste
+    let baseRam = 0.5;
+    if (type === 'forge') baseRam = 1.2;
+    else if (type === 'fabric') baseRam = 0.8;
+    else if (type === 'paper' || type === 'spigot') baseRam = 0.6;
+    
+    const ramUsage = isOnline ? parseFloat((baseRam + currentPlayers * 0.15).toFixed(1)) : 0;
+    const ramPercent = isOnline ? Math.round((ramUsage / 2) * 100) : 0; // Aternos = 2GB
+    
+    // CPU réaliste
+    let cpuUsage = 0;
+    if (isOnline) {
+        if (type === 'forge') cpuUsage = Math.floor(Math.random() * 250) + 150; // 150-400%
+        else if (type === 'fabric') cpuUsage = Math.floor(Math.random() * 80) + 30; // 30-110%
+        else cpuUsage = Math.floor(Math.random() * 50) + 20; // 20-70%
+    }
+    
+    // Uptime
+    let uptime = 0;
+    if (isOnline && aternosServer.startedAt) {
+        const now = new Date();
+        const started = new Date(aternosServer.startedAt);
+        uptime = Math.floor((now - started) / 1000);
+    } else if (isOnline) {
+        uptime = Math.floor(Math.random() * 3600); // Simulation si pas d'info
+    }
+    
     return {
-        ip: `mc-${id}.mccloud.fr:${25565 + parseInt(id)}`,
-        port: 25565 + parseInt(id)
+        id: serverId,
+        name: aternosServer.displayName || aternosServer.id,
+        version: version,
+        type: type,
+        modloader: type === 'forge' ? `forge-${version}` : null,
+        gamemode: 'survival',
+        plan: 'Aternos Free',
+        ram: 2, // Aternos gratuit = 2GB
+        cpuLimit: 100, // Simulation 100% = 1 coeur
+        maxPlayers: maxPlayers,
+        currentPlayers: currentPlayers,
+        status: status,
+        ip: aternosServer.ip || `${aternosServer.id}.aternos.me`,
+        port: aternosServer.port || 25565,
+        description: aternosServer.motd || '',
+        storage: 4, // Aternos ~ 4GB
+        createdAt: new Date().toISOString(),
+        startedAt: aternosServer.startedAt || null,
+        uptime: uptime,
+        cpuUsage: cpuUsage,
+        cpuPercent: cpuUsage,
+        ramUsage: ramUsage,
+        ramPercent: ramPercent,
+        uptimeFormatted: formatUptime(uptime)
     };
 }
 
-// Simuler l'utilisation CPU RÉALISTE selon le type de serveur
-function simulateCPUUsage(server, cpuLimit) {
-    if (server.status !== 'online') return 0;
+// ============================================
+// ROUTES API
+// ============================================
 
-    let baseUsage = cpuLimit * 0.2; // 20% de base
-    let maxUsage = cpuLimit * 0.7;  // 70% max
-    
-    // Forge/mods consomment BEAUCOUP plus de CPU
-    if (server.type === 'forge' || server.type === 'neoforge') {
-        baseUsage = cpuLimit * 0.4;  // 40% de base
-        maxUsage = cpuLimit * 1.5;   // Peut dépasser la limite (600% sur Gamer!)
-    } else if (server.type === 'fabric' || server.type === 'quilt') {
-        baseUsage = cpuLimit * 0.3;  // 30% de base
-        maxUsage = cpuLimit * 0.9;   // 90% max
-    }
-    
-    const minUsage = Math.floor(baseUsage);
-    const maxUsageFloor = Math.floor(maxUsage);
-    
-    return Math.floor(Math.random() * (maxUsageFloor - minUsage + 1)) + minUsage;
-}
-
-// Simuler l'utilisation RAM RÉALISTE selon le type de serveur et les joueurs
-function simulateRAMUsage(server, specs) {
-    if (server.status !== 'online') {
-        return 0;
-    }
-
-    // RAM de base selon le type (serveur vide, stable)
-    let baseRam = 0.5; // Vanilla de base : 0.5 GB
-    
-    if (server.type === 'forge' || server.type === 'neoforge') {
-        baseRam = 1.2; // Forge sans mods : 1-1.5 GB
-    } else if (server.type === 'fabric' || server.type === 'quilt') {
-        baseRam = 0.8; // Fabric plus léger : 0.8 GB
-    } else if (server.type === 'paper' || server.type === 'spigot') {
-        baseRam = 0.6; // Paper optimisé : 0.6 GB
-    }
-    
-    // Ajouter selon les joueurs (0.15 GB par joueur)
-    let playersRam = server.currentPlayers * 0.15;
-    
-    // Variation aléatoire légère (+/- 10%)
-    let variation = (Math.random() * 0.2 - 0.1) * baseRam;
-    
-    let ramUsage = baseRam + playersRam + variation;
-    ramUsage = Math.max(0.3, Math.min(ramUsage, specs.ram * 0.95)); // Min 0.3 GB, Max 95% de la limite
-    
-    return parseFloat(ramUsage.toFixed(1));
-}
-
-// Route de santé
+// Santé de l'API
 app.get('/api/health', (req, res) => {
-    res.json({ 
-        success: true, 
-        message: 'API fonctionnelle',
+    res.json({
+        success: true,
+        message: 'API Aternos fonctionnelle',
+        connected: isConnected,
+        serversCount: aternosServers.size,
         timestamp: new Date().toISOString()
     });
 });
 
-// Créer un serveur
-app.post('/api/servers/create', (req, res) => {
+// Créer un serveur (assigne un serveur Aternos pré-créé)
+app.post('/api/servers/create', async (req, res) => {
     try {
-        const { name, version, serverType, modloaderVersion, gamemode, plan, description } = req.body;
-        
-        // Validation
-        if (!name || !version || !serverType || !plan) {
-            return res.status(400).json({ 
-                success: false, 
-                message: 'Données manquantes' 
+        if (!isConnected) {
+            return res.status(503).json({
+                success: false,
+                message: 'Non connecté à Aternos'
             });
         }
-
-        const specs = getServerSpecs(plan);
-        const serverIP = generateServerIP(serverIdCounter);
         
-        const newServer = {
-            id: serverIdCounter.toString(),
-            name,
-            version,
-            type: serverType,
-            modloader: modloaderVersion || null,
-            gamemode: gamemode || 'survival',
-            plan,
-            ram: specs.ram,
-            cpuLimit: specs.cpuLimit,
-            maxPlayers: specs.maxPlayers,
-            currentPlayers: 0,
-            status: 'offline',
-            ip: serverIP.ip,
-            port: serverIP.port,
-            description: description || '',
-            storage: specs.storage,
-            createdAt: new Date().toISOString(),
-            startedAt: null,
-            uptime: 0
-        };
+        await refreshServerList();
         
-        serversDB.push(newServer);
-        serverIdCounter++;
+        // Vérifier si des serveurs sont disponibles
+        if (aternosServers.size === 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'Aucun serveur Aternos disponible. Créez-en un sur aternos.org d\'abord !',
+                info: 'Vous devez créer au moins 1 serveur sur aternos.org pour pouvoir l\'utiliser.'
+            });
+        }
         
-        res.json({ 
-            success: true, 
-            message: 'Serveur créé avec succès',
-            server: newServer
+        // Récupérer le premier serveur disponible
+        const firstServer = Array.from(aternosServers.values())[0];
+        const formattedServer = formatAternosServer(firstServer, '1');
+        
+        res.json({
+            success: true,
+            message: 'Serveur assigné avec succès ! Vous pouvez maintenant le démarrer.',
+            server: formattedServer,
+            info: 'Ce serveur était pré-créé sur Aternos. Vous pouvez le configurer et le démarrer !'
         });
     } catch (error) {
-        console.error('Erreur création serveur:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Erreur serveur' 
+        console.error('Erreur:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message
         });
     }
 });
 
 // Obtenir tous les serveurs
-app.get('/api/servers', (req, res) => {
+app.get('/api/servers', async (req, res) => {
     try {
-        // Ajouter les stats en temps réel
-        const serversWithStats = serversDB.map(server => {
-            const specs = getServerSpecs(server.plan);
-            
-            const cpuUsage = server.status === 'online' 
-                ? simulateCPUUsage(server.cpuLimit) 
-                : 0;
-            
-            const ramUsage = simulateRAMUsage(server, specs);
-
-            // Calculer uptime si en ligne
-            let uptime = 0;
-            if (server.status === 'online' && server.startedAt) {
-                const now = new Date();
-                const started = new Date(server.startedAt);
-                uptime = Math.floor((now - started) / 1000); // en secondes
-            }
-
-            return {
-                ...server,
-                cpuUsage,           // % d'utilisation actuelle
-                cpuPercent: ((cpuUsage / server.cpuLimit) * 100).toFixed(0), // % de la limite
-                ramUsage,           // GB utilisés
-                ramPercent: ((ramUsage / server.ram) * 100).toFixed(0),      // % de la limite
-                uptime,             // en secondes
-                uptimeFormatted: formatUptime(uptime)
-            };
-        });
+        if (!isConnected) {
+            return res.status(503).json({
+                success: false,
+                message: 'Non connecté à Aternos',
+                servers: []
+            });
+        }
         
-        res.json({ 
-            success: true, 
-            servers: serversWithStats 
+        await refreshServerList();
+        
+        const servers = [];
+        let index = 1;
+        for (const [serverId, aternosServer] of aternosServers) {
+            servers.push(formatAternosServer(aternosServer, index.toString()));
+            index++;
+        }
+        
+        res.json({
+            success: true,
+            servers: servers
         });
     } catch (error) {
         console.error('Erreur récupération serveurs:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Erreur serveur' 
+        res.status(500).json({
+            success: false,
+            message: error.message,
+            servers: []
         });
     }
 });
 
 // Obtenir un serveur par ID
-app.get('/api/servers/:id', (req, res) => {
+app.get('/api/servers/:id', async (req, res) => {
     try {
-        const server = serversDB.find(s => s.id === req.params.id);
-        
-        if (!server) {
-            return res.status(404).json({ 
-                success: false, 
-                message: 'Serveur non trouvé' 
+        if (!isConnected) {
+            return res.status(503).json({
+                success: false,
+                message: 'Non connecté à Aternos'
             });
         }
-
-        const specs = getServerSpecs(server.plan);
-
-        // Ajouter les stats en temps réel
-        const cpuUsage = server.status === 'online' 
-            ? simulateCPUUsage(server.cpuLimit) 
-            : 0;
         
-        const ramUsage = simulateRAMUsage(server, specs);
-
-        let uptime = 0;
-        if (server.status === 'online' && server.startedAt) {
-            const now = new Date();
-            const started = new Date(server.startedAt);
-            uptime = Math.floor((now - started) / 1000);
+        await refreshServerList();
+        
+        const serverIndex = parseInt(req.params.id) - 1;
+        const serverArray = Array.from(aternosServers.values());
+        
+        if (serverIndex < 0 || serverIndex >= serverArray.length) {
+            return res.status(404).json({
+                success: false,
+                message: 'Serveur non trouvé'
+            });
         }
-
-        const serverWithStats = {
-            ...server,
-            cpuUsage,
-            cpuPercent: ((cpuUsage / server.cpuLimit) * 100).toFixed(0),
-            ramUsage,
-            ramPercent: ((ramUsage / server.ram) * 100).toFixed(0),
-            uptime,
-            uptimeFormatted: formatUptime(uptime)
-        };
         
-        res.json({ 
-            success: true, 
-            server: serverWithStats 
+        const aternosServer = serverArray[serverIndex];
+        const server = formatAternosServer(aternosServer, req.params.id);
+        
+        res.json({
+            success: true,
+            server: server
         });
     } catch (error) {
         console.error('Erreur récupération serveur:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Erreur serveur' 
+        res.status(500).json({
+            success: false,
+            message: error.message
         });
     }
 });
 
 // Démarrer un serveur
-app.post('/api/servers/:id/start', (req, res) => {
+app.post('/api/servers/:id/start', async (req, res) => {
     try {
-        const server = serversDB.find(s => s.id === req.params.id);
-        
-        if (!server) {
-            return res.status(404).json({ 
-                success: false, 
-                message: 'Serveur non trouvé' 
+        if (!isConnected) {
+            return res.status(503).json({
+                success: false,
+                message: 'Non connecté à Aternos'
             });
         }
-
-        if (server.status === 'online') {
-            return res.json({ 
-                success: false, 
-                message: 'Le serveur est déjà en ligne' 
+        
+        const serverIndex = parseInt(req.params.id) - 1;
+        const serverArray = Array.from(aternosServers.values());
+        
+        if (serverIndex < 0 || serverIndex >= serverArray.length) {
+            return res.status(404).json({
+                success: false,
+                message: 'Serveur non trouvé'
             });
         }
-
-        // Passer en mode "starting"
-        server.status = 'starting';
-        server.startedAt = new Date().toISOString();
         
-        // Simuler le démarrage (3 secondes)
-        setTimeout(() => {
-            server.status = 'online';
-        }, 3000);
+        const aternosServer = serverArray[serverIndex];
         
-        res.json({ 
-            success: true, 
-            message: 'Serveur en cours de démarrage',
-            server 
+        // Vérifier si déjà en ligne
+        await aternosServer.refresh();
+        if (aternosServer.status === 'online') {
+            return res.json({
+                success: false,
+                message: 'Le serveur est déjà en ligne'
+            });
+        }
+        
+        // Démarrer le serveur via Aternos API
+        console.log(`🚀 Démarrage du serveur ${aternosServer.displayName}...`);
+        await aternosServer.start();
+        
+        res.json({
+            success: true,
+            message: 'Serveur en cours de démarrage (peut prendre 3-5 minutes)',
+            server: formatAternosServer(aternosServer, req.params.id)
         });
     } catch (error) {
         console.error('Erreur démarrage serveur:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Erreur serveur' 
+        res.status(500).json({
+            success: false,
+            message: error.message
         });
     }
 });
 
 // Arrêter un serveur
-app.post('/api/servers/:id/stop', (req, res) => {
+app.post('/api/servers/:id/stop', async (req, res) => {
     try {
-        const server = serversDB.find(s => s.id === req.params.id);
-        
-        if (!server) {
-            return res.status(404).json({ 
-                success: false, 
-                message: 'Serveur non trouvé' 
+        if (!isConnected) {
+            return res.status(503).json({
+                success: false,
+                message: 'Non connecté à Aternos'
             });
         }
-
-        if (server.status === 'offline') {
-            return res.json({ 
-                success: false, 
-                message: 'Le serveur est déjà arrêté' 
+        
+        const serverIndex = parseInt(req.params.id) - 1;
+        const serverArray = Array.from(aternosServers.values());
+        
+        if (serverIndex < 0 || serverIndex >= serverArray.length) {
+            return res.status(404).json({
+                success: false,
+                message: 'Serveur non trouvé'
             });
         }
-
-        server.status = 'offline';
-        server.currentPlayers = 0;
-        server.startedAt = null;
         
-        res.json({ 
-            success: true, 
+        const aternosServer = serverArray[serverIndex];
+        
+        // Vérifier si déjà hors ligne
+        await aternosServer.refresh();
+        if (aternosServer.status === 'offline') {
+            return res.json({
+                success: false,
+                message: 'Le serveur est déjà arrêté'
+            });
+        }
+        
+        // Arrêter le serveur via Aternos API
+        console.log(`🛑 Arrêt du serveur ${aternosServer.displayName}...`);
+        await aternosServer.stop();
+        
+        res.json({
+            success: true,
             message: 'Serveur arrêté',
-            server 
+            server: formatAternosServer(aternosServer, req.params.id)
         });
     } catch (error) {
         console.error('Erreur arrêt serveur:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Erreur serveur' 
+        res.status(500).json({
+            success: false,
+            message: error.message
         });
     }
 });
 
 // Redémarrer un serveur
-app.post('/api/servers/:id/restart', (req, res) => {
+app.post('/api/servers/:id/restart', async (req, res) => {
     try {
-        const server = serversDB.find(s => s.id === req.params.id);
-        
-        if (!server) {
-            return res.status(404).json({ 
-                success: false, 
-                message: 'Serveur non trouvé' 
+        if (!isConnected) {
+            return res.status(503).json({
+                success: false,
+                message: 'Non connecté à Aternos'
             });
         }
-
-        server.status = 'starting';
-        server.currentPlayers = 0;
-        server.startedAt = new Date().toISOString();
         
-        // Simuler le redémarrage (5 secondes)
-        setTimeout(() => {
-            server.status = 'online';
-        }, 5000);
+        const serverIndex = parseInt(req.params.id) - 1;
+        const serverArray = Array.from(aternosServers.values());
         
-        res.json({ 
-            success: true, 
+        if (serverIndex < 0 || serverIndex >= serverArray.length) {
+            return res.status(404).json({
+                success: false,
+                message: 'Serveur non trouvé'
+            });
+        }
+        
+        const aternosServer = serverArray[serverIndex];
+        
+        console.log(`🔄 Redémarrage du serveur ${aternosServer.displayName}...`);
+        await aternosServer.restart();
+        
+        res.json({
+            success: true,
             message: 'Serveur en cours de redémarrage',
-            server 
+            server: formatAternosServer(aternosServer, req.params.id)
         });
     } catch (error) {
         console.error('Erreur redémarrage serveur:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Erreur serveur' 
-        });
-    }
-});
-
-// Supprimer un serveur
-app.delete('/api/servers/:id', (req, res) => {
-    try {
-        const index = serversDB.findIndex(s => s.id === req.params.id);
-        
-        if (index === -1) {
-            return res.status(404).json({ 
-                success: false, 
-                message: 'Serveur non trouvé' 
-            });
-        }
-
-        serversDB.splice(index, 1);
-        
-        res.json({ 
-            success: true, 
-            message: 'Serveur supprimé' 
-        });
-    } catch (error) {
-        console.error('Erreur suppression serveur:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Erreur serveur' 
+        res.status(500).json({
+            success: false,
+            message: error.message
         });
     }
 });
 
 // Vérifier le statut d'un serveur (pour la page publique)
-app.get('/api/status/:serverIp', (req, res) => {
+app.get('/api/status/:serverIp', async (req, res) => {
     try {
-        const serverIp = decodeURIComponent(req.params.serverIp);
-        const server = serversDB.find(s => s.ip === serverIp);
+        if (!isConnected) {
+            return res.json({
+                status: 'offline',
+                message: 'Service non disponible'
+            });
+        }
         
-        if (!server) {
+        const serverIp = decodeURIComponent(req.params.serverIp);
+        
+        // Trouver le serveur par IP
+        let foundServer = null;
+        for (const aternosServer of aternosServers.values()) {
+            const ip = aternosServer.ip || `${aternosServer.id}.aternos.me`;
+            if (ip === serverIp) {
+                foundServer = aternosServer;
+                break;
+            }
+        }
+        
+        if (!foundServer) {
             return res.json({
                 status: 'offline',
                 message: 'Serveur non trouvé'
             });
         }
-
-        if (server.status === 'online') {
+        
+        await foundServer.refresh();
+        
+        if (foundServer.status === 'online') {
             res.json({
                 status: 'online',
                 server: {
-                    name: server.name,
-                    version: server.version,
-                    currentPlayers: server.currentPlayers,
-                    maxPlayers: server.maxPlayers,
-                    description: server.description,
+                    name: foundServer.displayName,
+                    version: foundServer.software?.version || 'Unknown',
+                    currentPlayers: foundServer.playersCurrent || 0,
+                    maxPlayers: foundServer.playersMax || 20,
+                    description: foundServer.motd || '',
                     ping: Math.floor(Math.random() * 50) + 10
                 }
             });
-        } else if (server.status === 'starting') {
+        } else if (foundServer.status === 'starting') {
             res.json({
                 status: 'starting',
                 message: 'Serveur en cours de démarrage'
@@ -436,9 +447,9 @@ app.get('/api/status/:serverIp', (req, res) => {
         }
     } catch (error) {
         console.error('Erreur vérification statut:', error);
-        res.status(500).json({ 
+        res.status(500).json({
             status: 'error',
-            message: 'Erreur serveur' 
+            message: error.message
         });
     }
 });
@@ -457,30 +468,25 @@ function formatUptime(seconds) {
     }
 }
 
-// Simuler des joueurs qui se connectent/déconnectent
-setInterval(() => {
-    serversDB.forEach(server => {
-        if (server.status === 'online' && Math.random() > 0.7) {
-            const change = Math.random() > 0.5 ? 1 : -1;
-            server.currentPlayers = Math.max(0, Math.min(server.maxPlayers, server.currentPlayers + change));
-        }
-    });
-}, 30000); // Toutes les 30 secondes
+// Rafraîchir automatiquement les serveurs toutes les 30 secondes
+setInterval(async () => {
+    if (isConnected) {
+        await refreshServerList();
+    }
+}, 30000);
 
 // Démarrage du serveur
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
     console.log(`✅ Serveur API démarré sur le port ${PORT}`);
-    console.log(`📊 Stats système:`);
-    console.log(`   - Basique: 50% CPU (0.5 cœur)`);
-    console.log(`   - Super: 200% CPU (2 cœurs)`);
-    console.log(`   - Gamer: 400% CPU (4 cœurs)`);
+    console.log(`🔄 Initialisation de la connexion Aternos...`);
+    await initAternos();
 });
 
 // Gestion des erreurs
 process.on('uncaughtException', (error) => {
-    console.error('Erreur non gérée:', error);
+    console.error('❌ Erreur non gérée:', error);
 });
 
 process.on('unhandledRejection', (error) => {
-    console.error('Promesse rejetée:', error);
+    console.error('❌ Promesse rejetée:', error);
 });
