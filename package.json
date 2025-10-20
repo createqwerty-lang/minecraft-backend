@@ -1,24 +1,27 @@
 {
   "name": "minecraft-hosting-backend",
-  "version": "1.0.0",
-  "description": "Backend API pour hébergement de serveurs Minecraft",
+  "version": "2.0.0",
+  "description": "Backend API pour hébergement de serveurs Minecraft avec Aternos",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "node server.js"
   },
   "keywords": [
     "minecraft",
     "server",
     "hosting",
-    "api"
+    "api",
+    "aternos"
   ],
   "author": "",
   "license": "MIT",
   "dependencies": {
     "express": "^4.18.2",
-    "cors": "^2.8.5"
+    "cors": "^2.8.5",
+    "aternos-api": "^1.0.0"
   },
   "engines": {
-    "node": ">=16.0.0"
+    "node": ">=18.0.0"
   }
 }
