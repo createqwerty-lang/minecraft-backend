@@ -1,6 +1,7 @@
-// server.js - Backend API pour hébergement Minecraft avec système CPU
+// server.js - Backend API avec TickHosting/Pterodactyl (6 GB RAM GRATUIT)
 const express = require('express');
 const cors = require('cors');
+const axios = require('axios');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -9,439 +10,70 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// Base de données simulée (en mémoire)
-let serversDB = [];
-let serverIdCounter = 1;
+// Configuration Pterodactyl (TickHosting utilise Pterodactyl)
+const PTERO_URL = process.env.PTERO_URL || 'https://panel.tickhosting.com';
+const PTERO_API_KEY = process.env.PTERO_API_KEY || 'TON_API_KEY_ICI';
 
-// Spécifications par plan
-function getServerSpecs(plan) {
-    const specs = {
-        'Basique': { 
-            ram: 4, 
-            cpuLimit: 50,      // 50% = 0.5 cœur
-            maxPlayers: 20,
-            storage: 10        // 10 GB
-        },
-        'Super': { 
-            ram: 8, 
-            cpuLimit: 200,     // 200% = 2 cœurs
-            maxPlayers: 50,
-            storage: 25        // 25 GB
-        },
-        'Gamer': { 
-            ram: 16, 
-            cpuLimit: 400,     // 400% = 4 cœurs
-            maxPlayers: 100,
-            storage: 50        // 50 GB
-        }
-    };
-    return specs[plan] || specs['Basique'];
-}
+// Client Axios pour Pterodactyl API
+const pteroAPI = axios.create({
+    baseURL: `${PTERO_URL}/api/client`,
+    headers: {
+        'Authorization': `Bearer ${PTERO_API_KEY}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+    }
+});
 
-// Générer une IP de serveur
-function generateServerIP(id) {
+// Formater un serveur Pterodactyl en format API
+function formatPteroServer(server, index) {
+    const resources = server.attributes.resources || {};
+    const isOnline = server.attributes.status === 'running';
+    
+    // RAM
+    const ramMB = resources.memory_bytes ? Math.round(resources.memory_bytes / 1024 / 1024) : 0;
+    const ramGB = ramMB / 1024;
+    const ramLimit = server.attributes.limits?.memory || 6144; // 6 GB par défaut
+    const ramLimitGB = ramLimit / 1024;
+    const ramPercent = ramLimit > 0 ? Math.round((ramMB / ramLimit) * 100) : 0;
+    
+    // CPU
+    const cpuPercent = resources.cpu_absolute || 0;
+    
+    // Uptime
+    const uptime = resources.uptime || 0;
+    
+    // Joueurs (si disponible via query)
+    const currentPlayers = 0; // Nécessite query séparé
+    
     return {
-        ip: `mc-${id}.mccloud.fr:${25565 + parseInt(id)}`,
-        port: 25565 + parseInt(id)
+        id: (index + 1).toString(),
+        pteroId: server.attributes.uuid,
+        identifier: server.attributes.identifier,
+        name: server.attributes.name,
+        version: server.attributes.description || 'Unknown',
+        type: 'paper', // Par défaut, peut être détecté
+        modloader: null,
+        gamemode: 'survival',
+        plan: `TickHosting Free (${ramLimitGB} GB)`,
+        ram: ramLimitGB,
+        cpuLimit: server.attributes.limits?.cpu || 100,
+        maxPlayers: 20,
+        currentPlayers: currentPlayers,
+        status: isOnline ? 'online' : 'offline',
+        ip: server.attributes.sftp_details?.ip || 'pending',
+        port: server.attributes.relationships?.allocations?.data?.[0]?.attributes?.port || 25565,
+        description: server.attributes.description || '',
+        storage: Math.round((server.attributes.limits?.disk || 10240) / 1024), // en GB
+        createdAt: server.attributes.created_at || new Date().toISOString(),
+        startedAt: isOnline ? new Date().toISOString() : null,
+        uptime: uptime,
+        cpuUsage: cpuPercent,
+        cpuPercent: cpuPercent,
+        ramUsage: parseFloat(ramGB.toFixed(1)),
+        ramPercent: ramPercent,
+        uptimeFormatted: formatUptime(uptime)
     };
 }
-
-// Simuler l'utilisation CPU RÉALISTE selon le type de serveur
-function simulateCPUUsage(server, cpuLimit) {
-    if (server.status !== 'online') return 0;
-
-    let baseUsage = cpuLimit * 0.2; // 20% de base
-    let maxUsage = cpuLimit * 0.7;  // 70% max
-    
-    // Forge/mods consomment BEAUCOUP plus de CPU
-    if (server.type === 'forge' || server.type === 'neoforge') {
-        baseUsage = cpuLimit * 0.4;  // 40% de base
-        maxUsage = cpuLimit * 1.5;   // Peut dépasser la limite (600% sur Gamer!)
-    } else if (server.type === 'fabric' || server.type === 'quilt') {
-        baseUsage = cpuLimit * 0.3;  // 30% de base
-        maxUsage = cpuLimit * 0.9;   // 90% max
-    }
-    
-    const minUsage = Math.floor(baseUsage);
-    const maxUsageFloor = Math.floor(maxUsage);
-    
-    return Math.floor(Math.random() * (maxUsageFloor - minUsage + 1)) + minUsage;
-}
-
-// Simuler l'utilisation RAM RÉALISTE selon le type de serveur et les joueurs
-function simulateRAMUsage(server, specs) {
-    if (server.status !== 'online') {
-        return 0;
-    }
-
-    // RAM de base selon le type (serveur vide, stable)
-    let baseRam = 0.5; // Vanilla de base : 0.5 GB
-    
-    if (server.type === 'forge' || server.type === 'neoforge') {
-        baseRam = 1.2; // Forge sans mods : 1-1.5 GB
-    } else if (server.type === 'fabric' || server.type === 'quilt') {
-        baseRam = 0.8; // Fabric plus léger : 0.8 GB
-    } else if (server.type === 'paper' || server.type === 'spigot') {
-        baseRam = 0.6; // Paper optimisé : 0.6 GB
-    }
-    
-    // Ajouter selon les joueurs (0.15 GB par joueur)
-    let playersRam = server.currentPlayers * 0.15;
-    
-    // Variation aléatoire légère (+/- 10%)
-    let variation = (Math.random() * 0.2 - 0.1) * baseRam;
-    
-    let ramUsage = baseRam + playersRam + variation;
-    ramUsage = Math.max(0.3, Math.min(ramUsage, specs.ram * 0.95)); // Min 0.3 GB, Max 95% de la limite
-    
-    return parseFloat(ramUsage.toFixed(1));
-}
-
-// Route de santé
-app.get('/api/health', (req, res) => {
-    res.json({ 
-        success: true, 
-        message: 'API fonctionnelle',
-        timestamp: new Date().toISOString()
-    });
-});
-
-// Créer un serveur
-app.post('/api/servers/create', (req, res) => {
-    try {
-        const { name, version, serverType, modloaderVersion, gamemode, plan, description } = req.body;
-        
-        // Validation
-        if (!name || !version || !serverType || !plan) {
-            return res.status(400).json({ 
-                success: false, 
-                message: 'Données manquantes' 
-            });
-        }
-
-        const specs = getServerSpecs(plan);
-        const serverIP = generateServerIP(serverIdCounter);
-        
-        const newServer = {
-            id: serverIdCounter.toString(),
-            name,
-            version,
-            type: serverType,
-            modloader: modloaderVersion || null,
-            gamemode: gamemode || 'survival',
-            plan,
-            ram: specs.ram,
-            cpuLimit: specs.cpuLimit,
-            maxPlayers: specs.maxPlayers,
-            currentPlayers: 0,
-            status: 'offline',
-            ip: serverIP.ip,
-            port: serverIP.port,
-            description: description || '',
-            storage: specs.storage,
-            createdAt: new Date().toISOString(),
-            startedAt: null,
-            uptime: 0
-        };
-        
-        serversDB.push(newServer);
-        serverIdCounter++;
-        
-        res.json({ 
-            success: true, 
-            message: 'Serveur créé avec succès',
-            server: newServer
-        });
-    } catch (error) {
-        console.error('Erreur création serveur:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Erreur serveur' 
-        });
-    }
-});
-
-// Obtenir tous les serveurs
-app.get('/api/servers', (req, res) => {
-    try {
-        // Ajouter les stats en temps réel
-        const serversWithStats = serversDB.map(server => {
-            const specs = getServerSpecs(server.plan);
-            
-            const cpuUsage = server.status === 'online' 
-                ? simulateCPUUsage(server.cpuLimit) 
-                : 0;
-            
-            const ramUsage = simulateRAMUsage(server, specs);
-
-            // Calculer uptime si en ligne
-            let uptime = 0;
-            if (server.status === 'online' && server.startedAt) {
-                const now = new Date();
-                const started = new Date(server.startedAt);
-                uptime = Math.floor((now - started) / 1000); // en secondes
-            }
-
-            return {
-                ...server,
-                cpuUsage,           // % d'utilisation actuelle
-                cpuPercent: ((cpuUsage / server.cpuLimit) * 100).toFixed(0), // % de la limite
-                ramUsage,           // GB utilisés
-                ramPercent: ((ramUsage / server.ram) * 100).toFixed(0),      // % de la limite
-                uptime,             // en secondes
-                uptimeFormatted: formatUptime(uptime)
-            };
-        });
-        
-        res.json({ 
-            success: true, 
-            servers: serversWithStats 
-        });
-    } catch (error) {
-        console.error('Erreur récupération serveurs:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Erreur serveur' 
-        });
-    }
-});
-
-// Obtenir un serveur par ID
-app.get('/api/servers/:id', (req, res) => {
-    try {
-        const server = serversDB.find(s => s.id === req.params.id);
-        
-        if (!server) {
-            return res.status(404).json({ 
-                success: false, 
-                message: 'Serveur non trouvé' 
-            });
-        }
-
-        const specs = getServerSpecs(server.plan);
-
-        // Ajouter les stats en temps réel
-        const cpuUsage = server.status === 'online' 
-            ? simulateCPUUsage(server.cpuLimit) 
-            : 0;
-        
-        const ramUsage = simulateRAMUsage(server, specs);
-
-        let uptime = 0;
-        if (server.status === 'online' && server.startedAt) {
-            const now = new Date();
-            const started = new Date(server.startedAt);
-            uptime = Math.floor((now - started) / 1000);
-        }
-
-        const serverWithStats = {
-            ...server,
-            cpuUsage,
-            cpuPercent: ((cpuUsage / server.cpuLimit) * 100).toFixed(0),
-            ramUsage,
-            ramPercent: ((ramUsage / server.ram) * 100).toFixed(0),
-            uptime,
-            uptimeFormatted: formatUptime(uptime)
-        };
-        
-        res.json({ 
-            success: true, 
-            server: serverWithStats 
-        });
-    } catch (error) {
-        console.error('Erreur récupération serveur:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Erreur serveur' 
-        });
-    }
-});
-
-// Démarrer un serveur
-app.post('/api/servers/:id/start', (req, res) => {
-    try {
-        const server = serversDB.find(s => s.id === req.params.id);
-        
-        if (!server) {
-            return res.status(404).json({ 
-                success: false, 
-                message: 'Serveur non trouvé' 
-            });
-        }
-
-        if (server.status === 'online') {
-            return res.json({ 
-                success: false, 
-                message: 'Le serveur est déjà en ligne' 
-            });
-        }
-
-        // Passer en mode "starting"
-        server.status = 'starting';
-        server.startedAt = new Date().toISOString();
-        
-        // Simuler le démarrage (3 secondes)
-        setTimeout(() => {
-            server.status = 'online';
-        }, 3000);
-        
-        res.json({ 
-            success: true, 
-            message: 'Serveur en cours de démarrage',
-            server 
-        });
-    } catch (error) {
-        console.error('Erreur démarrage serveur:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Erreur serveur' 
-        });
-    }
-});
-
-// Arrêter un serveur
-app.post('/api/servers/:id/stop', (req, res) => {
-    try {
-        const server = serversDB.find(s => s.id === req.params.id);
-        
-        if (!server) {
-            return res.status(404).json({ 
-                success: false, 
-                message: 'Serveur non trouvé' 
-            });
-        }
-
-        if (server.status === 'offline') {
-            return res.json({ 
-                success: false, 
-                message: 'Le serveur est déjà arrêté' 
-            });
-        }
-
-        server.status = 'offline';
-        server.currentPlayers = 0;
-        server.startedAt = null;
-        
-        res.json({ 
-            success: true, 
-            message: 'Serveur arrêté',
-            server 
-        });
-    } catch (error) {
-        console.error('Erreur arrêt serveur:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Erreur serveur' 
-        });
-    }
-});
-
-// Redémarrer un serveur
-app.post('/api/servers/:id/restart', (req, res) => {
-    try {
-        const server = serversDB.find(s => s.id === req.params.id);
-        
-        if (!server) {
-            return res.status(404).json({ 
-                success: false, 
-                message: 'Serveur non trouvé' 
-            });
-        }
-
-        server.status = 'starting';
-        server.currentPlayers = 0;
-        server.startedAt = new Date().toISOString();
-        
-        // Simuler le redémarrage (5 secondes)
-        setTimeout(() => {
-            server.status = 'online';
-        }, 5000);
-        
-        res.json({ 
-            success: true, 
-            message: 'Serveur en cours de redémarrage',
-            server 
-        });
-    } catch (error) {
-        console.error('Erreur redémarrage serveur:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Erreur serveur' 
-        });
-    }
-});
-
-// Supprimer un serveur
-app.delete('/api/servers/:id', (req, res) => {
-    try {
-        const index = serversDB.findIndex(s => s.id === req.params.id);
-        
-        if (index === -1) {
-            return res.status(404).json({ 
-                success: false, 
-                message: 'Serveur non trouvé' 
-            });
-        }
-
-        serversDB.splice(index, 1);
-        
-        res.json({ 
-            success: true, 
-            message: 'Serveur supprimé' 
-        });
-    } catch (error) {
-        console.error('Erreur suppression serveur:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Erreur serveur' 
-        });
-    }
-});
-
-// Vérifier le statut d'un serveur (pour la page publique)
-app.get('/api/status/:serverIp', (req, res) => {
-    try {
-        const serverIp = decodeURIComponent(req.params.serverIp);
-        const server = serversDB.find(s => s.ip === serverIp);
-        
-        if (!server) {
-            return res.json({
-                status: 'offline',
-                message: 'Serveur non trouvé'
-            });
-        }
-
-        if (server.status === 'online') {
-            res.json({
-                status: 'online',
-                server: {
-                    name: server.name,
-                    version: server.version,
-                    currentPlayers: server.currentPlayers,
-                    maxPlayers: server.maxPlayers,
-                    description: server.description,
-                    ping: Math.floor(Math.random() * 50) + 10
-                }
-            });
-        } else if (server.status === 'starting') {
-            res.json({
-                status: 'starting',
-                message: 'Serveur en cours de démarrage'
-            });
-        } else {
-            res.json({
-                status: 'offline',
-                message: 'Serveur hors ligne'
-            });
-        }
-    } catch (error) {
-        console.error('Erreur vérification statut:', error);
-        res.status(500).json({ 
-            status: 'error',
-            message: 'Erreur serveur' 
-        });
-    }
-});
 
 // Formater l'uptime
 function formatUptime(seconds) {
@@ -457,30 +89,299 @@ function formatUptime(seconds) {
     }
 }
 
-// Simuler des joueurs qui se connectent/déconnectent
-setInterval(() => {
-    serversDB.forEach(server => {
-        if (server.status === 'online' && Math.random() > 0.7) {
-            const change = Math.random() > 0.5 ? 1 : -1;
-            server.currentPlayers = Math.max(0, Math.min(server.maxPlayers, server.currentPlayers + change));
+// ============================================
+// ROUTES API
+// ============================================
+
+// Santé de l'API
+app.get('/api/health', async (req, res) => {
+    try {
+        const response = await pteroAPI.get('/');
+        res.json({
+            success: true,
+            message: 'API TickHosting fonctionnelle (6 GB RAM gratuit)',
+            connected: true,
+            serversCount: response.data?.data?.length || 0,
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        res.json({
+            success: true,
+            message: 'API fonctionnelle mais TickHosting non connecté',
+            connected: false,
+            error: error.message,
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+// Créer un serveur (NOTE: Création via panel TickHosting, pas via API)
+app.post('/api/servers/create', async (req, res) => {
+    try {
+        // Pterodactyl Client API ne permet pas la création de serveurs
+        // Les serveurs doivent être créés via le panel web de TickHosting
+        
+        res.status(400).json({
+            success: false,
+            message: 'Créez votre serveur sur panel.tickhosting.com, il apparaîtra automatiquement ici !',
+            info: 'TickHosting ne permet pas la création de serveurs via API. Utilisez le panel web.'
+        });
+    } catch (error) {
+        console.error('Erreur:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message
+        });
+    }
+});
+
+// Obtenir tous les serveurs
+app.get('/api/servers', async (req, res) => {
+    try {
+        const response = await pteroAPI.get('/');
+        const servers = response.data?.data || [];
+        
+        // Récupérer les ressources pour chaque serveur
+        const serversWithStats = await Promise.all(
+            servers.map(async (server, index) => {
+                try {
+                    const resourcesResponse = await pteroAPI.get(
+                        `/servers/${server.attributes.identifier}/resources`
+                    );
+                    server.attributes.resources = resourcesResponse.data.attributes;
+                } catch (err) {
+                    console.error(`Erreur récupération ressources serveur ${server.attributes.identifier}:`, err.message);
+                }
+                return formatPteroServer(server, index);
+            })
+        );
+        
+        res.json({
+            success: true,
+            servers: serversWithStats
+        });
+    } catch (error) {
+        console.error('Erreur récupération serveurs:', error.response?.data || error.message);
+        res.status(500).json({
+            success: false,
+            message: error.message,
+            servers: []
+        });
+    }
+});
+
+// Obtenir un serveur par ID
+app.get('/api/servers/:id', async (req, res) => {
+    try {
+        const response = await pteroAPI.get('/');
+        const servers = response.data?.data || [];
+        const index = parseInt(req.params.id) - 1;
+        
+        if (index < 0 || index >= servers.length) {
+            return res.status(404).json({
+                success: false,
+                message: 'Serveur non trouvé'
+            });
         }
-    });
-}, 30000); // Toutes les 30 secondes
+        
+        const server = servers[index];
+        
+        // Récupérer les ressources
+        try {
+            const resourcesResponse = await pteroAPI.get(
+                `/servers/${server.attributes.identifier}/resources`
+            );
+            server.attributes.resources = resourcesResponse.data.attributes;
+        } catch (err) {
+            console.error('Erreur récupération ressources:', err.message);
+        }
+        
+        res.json({
+            success: true,
+            server: formatPteroServer(server, index)
+        });
+    } catch (error) {
+        console.error('Erreur récupération serveur:', error.response?.data || error.message);
+        res.status(500).json({
+            success: false,
+            message: error.message
+        });
+    }
+});
+
+// Démarrer un serveur
+app.post('/api/servers/:id/start', async (req, res) => {
+    try {
+        const response = await pteroAPI.get('/');
+        const servers = response.data?.data || [];
+        const index = parseInt(req.params.id) - 1;
+        
+        if (index < 0 || index >= servers.length) {
+            return res.status(404).json({
+                success: false,
+                message: 'Serveur non trouvé'
+            });
+        }
+        
+        const server = servers[index];
+        const identifier = server.attributes.identifier;
+        
+        // Démarrer via Pterodactyl API
+        await pteroAPI.post(`/servers/${identifier}/power`, {
+            signal: 'start'
+        });
+        
+        res.json({
+            success: true,
+            message: 'Serveur en cours de démarrage',
+            server: formatPteroServer(server, index)
+        });
+    } catch (error) {
+        console.error('Erreur démarrage serveur:', error.response?.data || error.message);
+        res.status(500).json({
+            success: false,
+            message: error.response?.data?.errors?.[0]?.detail || error.message
+        });
+    }
+});
+
+// Arrêter un serveur
+app.post('/api/servers/:id/stop', async (req, res) => {
+    try {
+        const response = await pteroAPI.get('/');
+        const servers = response.data?.data || [];
+        const index = parseInt(req.params.id) - 1;
+        
+        if (index < 0 || index >= servers.length) {
+            return res.status(404).json({
+                success: false,
+                message: 'Serveur non trouvé'
+            });
+        }
+        
+        const server = servers[index];
+        const identifier = server.attributes.identifier;
+        
+        // Arrêter via Pterodactyl API
+        await pteroAPI.post(`/servers/${identifier}/power`, {
+            signal: 'stop'
+        });
+        
+        res.json({
+            success: true,
+            message: 'Serveur arrêté',
+            server: formatPteroServer(server, index)
+        });
+    } catch (error) {
+        console.error('Erreur arrêt serveur:', error.response?.data || error.message);
+        res.status(500).json({
+            success: false,
+            message: error.response?.data?.errors?.[0]?.detail || error.message
+        });
+    }
+});
+
+// Redémarrer un serveur
+app.post('/api/servers/:id/restart', async (req, res) => {
+    try {
+        const response = await pteroAPI.get('/');
+        const servers = response.data?.data || [];
+        const index = parseInt(req.params.id) - 1;
+        
+        if (index < 0 || index >= servers.length) {
+            return res.status(404).json({
+                success: false,
+                message: 'Serveur non trouvé'
+            });
+        }
+        
+        const server = servers[index];
+        const identifier = server.attributes.identifier;
+        
+        // Redémarrer via Pterodactyl API
+        await pteroAPI.post(`/servers/${identifier}/power`, {
+            signal: 'restart'
+        });
+        
+        res.json({
+            success: true,
+            message: 'Serveur en cours de redémarrage',
+            server: formatPteroServer(server, index)
+        });
+    } catch (error) {
+        console.error('Erreur redémarrage serveur:', error.response?.data || error.message);
+        res.status(500).json({
+            success: false,
+            message: error.response?.data?.errors?.[0]?.detail || error.message
+        });
+    }
+});
+
+// Vérifier le statut d'un serveur
+app.get('/api/status/:serverIp', async (req, res) => {
+    try {
+        const serverIp = decodeURIComponent(req.params.serverIp);
+        const response = await pteroAPI.get('/');
+        const servers = response.data?.data || [];
+        
+        const server = servers.find(s => {
+            const port = s.attributes.relationships?.allocations?.data?.[0]?.attributes?.port;
+            const ip = s.attributes.sftp_details?.ip;
+            return `${ip}:${port}` === serverIp;
+        });
+        
+        if (!server) {
+            return res.json({
+                status: 'offline',
+                message: 'Serveur non trouvé'
+            });
+        }
+        
+        if (server.attributes.status === 'running') {
+            res.json({
+                status: 'online',
+                server: {
+                    name: server.attributes.name,
+                    version: server.attributes.description,
+                    currentPlayers: 0,
+                    maxPlayers: 20,
+                    description: server.attributes.description || '',
+                    ping: Math.floor(Math.random() * 50) + 10
+                }
+            });
+        } else if (server.attributes.status === 'starting') {
+            res.json({
+                status: 'starting',
+                message: 'Serveur en cours de démarrage'
+            });
+        } else {
+            res.json({
+                status: 'offline',
+                message: 'Serveur hors ligne'
+            });
+        }
+    } catch (error) {
+        console.error('Erreur vérification statut:', error);
+        res.status(500).json({
+            status: 'error',
+            message: error.message
+        });
+    }
+});
 
 // Démarrage du serveur
 app.listen(PORT, () => {
     console.log(`✅ Serveur API démarré sur le port ${PORT}`);
-    console.log(`📊 Stats système:`);
-    console.log(`   - Basique: 50% CPU (0.5 cœur)`);
-    console.log(`   - Super: 200% CPU (2 cœurs)`);
-    console.log(`   - Gamer: 400% CPU (4 cœurs)`);
+    console.log(`🎮 Utilisation de TickHosting/Pterodactyl API`);
+    console.log(`💾 6 GB RAM gratuit par serveur !`);
+    console.log(`📝 Parfait pour 150-200 mods`);
 });
 
 // Gestion des erreurs
 process.on('uncaughtException', (error) => {
-    console.error('Erreur non gérée:', error);
+    console.error('❌ Erreur non gérée:', error);
 });
 
 process.on('unhandledRejection', (error) => {
-    console.error('Promesse rejetée:', error);
+    console.error('❌ Promesse rejetée:', error);
 });
