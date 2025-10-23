@@ -1,24 +1,17 @@
 {
   "name": "minecraft-hosting-backend",
-  "version": "1.0.0",
-  "description": "Backend API pour hébergement de serveurs Minecraft",
+  "version": "5.0.0",
+  "description": "Backend avec TickHosting/Pterodactyl (6 GB RAM gratuit)",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
-  "keywords": [
-    "minecraft",
-    "server",
-    "hosting",
-    "api"
-  ],
-  "author": "",
-  "license": "MIT",
   "dependencies": {
     "express": "^4.18.2",
-    "cors": "^2.8.5"
+    "cors": "^2.8.5",
+    "axios": "^1.6.0"
   },
   "engines": {
-    "node": ">=16.0.0"
+    "node": ">=18.0.0"
   }
 }
