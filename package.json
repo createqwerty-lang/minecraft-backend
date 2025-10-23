@@ -1,7 +1,7 @@
 {
   "name": "minecraft-hosting-backend",
   "version": "5.0.0",
-  "description": "Backend avec TickHosting/Pterodactyl (6 GB RAM gratuit)",
+  "description": "Backend avec TickHosting/Pterodactyl (8 GB RAM gratuit)",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
